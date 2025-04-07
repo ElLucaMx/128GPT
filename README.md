@@ -14,7 +14,6 @@ Este script en Bash automatiza la creación de particiones en discos utilizando 
 - **Creación de tabla de particiones GPT**.
 - **Opción para crear 128 particiones o un número personalizado**.
 - **Confirmación explícita del usuario antes de destruir datos**.
-- **Registro detallado de la ejecución** en `partition_script.log`.
 
 ---
 
