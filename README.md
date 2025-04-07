@@ -47,4 +47,4 @@ El script detecta automáticamente y usa el gestor de paquetes adecuado en las s
 ## 🚀 Uso
 
 ```bash
-sudo ./script_particionado.sh
+sudo ./128gpt.sh
