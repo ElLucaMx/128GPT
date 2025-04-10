@@ -39,7 +39,7 @@ El script detecta automáticamente y usa el gestor de paquetes adecuado en las s
 | Alpine             | `apk`                        |
 | Gentoo             | `emerge`                     |
 
-> ⚠️ Si tu distribución no está listada, el script te notificará para realizar la instalación manual de `parted`.
+> ⚠️ Si tu distribución no está en la lista, el script te notificará para realizar la instalación manual de `parted`.
 
 ---
 
