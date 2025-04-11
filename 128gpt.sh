@@ -1,16 +1,17 @@
 #!/bin/bash
 
 clear
-
 bash 128GPTASCII
 
 # Nombre del log
-LOG_FILE="./partition_script.log"
+ARCHIVO_LOG="./partition_script.log"
 
 # Función para escribir mensajes en el log con timestamp
-log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+escribir_log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$ARCHIVO_LOG"
 }
+
+escribir_log "Inicio del script 128GPT."
 
 # Verificar si el script se ejecuta con permisos de administrador
 if [ "$EUID" -ne 0 ]; then
@@ -18,182 +19,178 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-log_message "Inicio del script de particionado."
-
-# Función para instalar 'parted' según la distribución detectada
-instalar_parted() {
+# Función para instalar 'parted' y 'dialog' según la distribución detectada
+instalar_dependencias() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         distro=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
-        log_message "Distribución detectada: $distro"
+        echo "Distribución detectada: $distro"
     else
-        log_message "No se pudo detectar la distribución. Proceda con la instalación manual."
-        exit 1
-    fi
-
-log_message "Inicio del script de particionado."
-
-# Función para instalar 'parted' según la distribución detectada
-instalar_parted() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        distro=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
-        log_message "Distribución detectada: $distro"
-    else
-        log_message "No se pudo detectar la distribución. Proceda con la instalación manual."
+        echo "No se pudo detectar la distribución. Proceda con la instalación manual."
         exit 1
     fi
 
     case "$distro" in
         ubuntu|debian|linuxmint|kali)
-            apt update && apt install -y parted
+            apt update && apt install -y parted dialog
             ;;
         arch|manjaro)
-            pacman -S --noconfirm parted
+            pacman -Syu --noconfirm parted dialog
             ;;
         fedora)
-            dnf install -y parted
+            dnf install -y parted dialog
             ;;
         rhel|centos)
-            yum install -y parted || dnf install -y parted
+            yum install -y parted dialog || dnf install -y parted dialog
             ;;
-        opensuse* )
-            zypper install -y parted
+        opensuse*)
+            zypper install -y parted dialog
             ;;
         alpine)
-            apk add parted
+            apk add parted dialog
             ;;
         gentoo)
-            emerge --ask sys-block/parted
+            emerge --ask sys-block/parted app-misc/dialog
             ;;
         *)
-            log_message "Distribución '$distro' no soportada automáticamente. Instala 'parted' manualmente."
+            echo "Distribución '$distro' no soportada. Instala 'parted' y 'dialog' manualmente."
             exit 1
             ;;
     esac
 
-    if command -v parted &> /dev/null; then
-        log_message "'parted' se instaló correctamente."
+    if command -v parted &> /dev/null && command -v dialog &> /dev/null; then
+        echo "Las dependencias se instalaron correctamente."
     else
-        log_message "Error: No se pudo instalar 'parted'."
+        echo "Error: No se pudo instalar las dependencias ('parted' o 'dialog')."
         exit 1
     fi
 }
 
-# Verificar si 'parted' está instalado
-if ! command -v parted &> /dev/null; then
-    echo "El programa 'parted' no está instalado."
-    read -p "¿Quieres instalarlo? (s/n): " respuesta
-    if [[ "$respuesta" =~ ^[sS]$ ]]; then
-        log_message "El usuario eligió instalar 'parted'."
-        echo "Verificando conexión a Internet..."
-        if ping -c 1 8.8.8.8 &> /dev/null; then
-            log_message "Conexión a Internet verificada."
-            instalar_parted
+# Verificar e instalar dependencias si no están presentes
+verificar_instalar_programa() {
+    programa=$1
+    if ! command -v "$programa" &> /dev/null; then
+        echo "La dependencia '$programa' no está instalada."
+        read -p "¿Quieres instalarla? (s/n): " respuesta
+        if [[ "$respuesta" =~ ^[sS]$ ]]; then
+            instalar_dependencias
         else
-            log_message "No hay conexión a Internet. No se puede instalar 'parted'."
-            echo "No hay conexión a Internet. No se puede instalar 'parted'."
+            echo "No se instalará '$programa'. Cerrando el script."
             exit 1
         fi
-    else
-        log_message "El usuario optó por no instalar 'parted'."
-        echo "No se instalará 'parted'. Cerrando el script."
-        exit 1
     fi
+}
+
+verificar_instalar_programa parted
+verificar_instalar_programa dialog
+
+clear
+bash 128GPTASCII
+echo "Iniciando el script."
+sleep 5
+
+# Obtener lista de discos disponibles sin particiones montadas y sin RAID
+filtrar_discos_sin_particiones_o_raid() {
+    local discos; discos=$(lsblk -dn -o NAME,TYPE | awk '$2 == "disk" { print $1 }')
+    local raids_raw; raids_raw=$(mdadm --detail --scan 2>/dev/null)
+    local raids="";
+    local disco;
+
+    if [[ -n "$raids_raw" ]]; then
+        raids=$(grep -oE '/dev/[a-z]+[a-z]+' <<< "$raids_raw" | grep -E '^/dev/[a-z]+$' | xargs -n1 basename)
+    fi
+
+    if [[ -z "$discos" ]]; then
+        printf "No se encontraron discos físicos.\n" >&2
+        return 1
+    fi
+
+    while IFS= read -r disco; do
+        local tiene_particiones; tiene_particiones=$(lsblk -n -o NAME "/dev/$disco" | grep -v "^$disco$")
+
+        if [[ -n "$tiene_particiones" ]]; then
+            continue
+        fi
+
+        if [[ -n "$raids" ]] && printf "%s\n" "$raids" | grep -qw "$disco"; then
+            continue
+        fi
+
+        printf "/dev/%s\n" "$disco"
+    done <<< "$discos"
+}
+
+# Filtrar y obtener los discos disponibles
+discos_disponibles=$(filtrar_discos_sin_particiones_o_raid)
+
+if [ -z "$discos_disponibles" ]; then
+    echo "No hay discos disponibles para particionar."
+    exit 1
 fi
+
+# Crear lista de elementos para dialog: cada línea tendrá el nombre del disco y su información
+IFS=$'\n'
+elementos_menu=()
+for linea in $discos_disponibles; do
+    nombre_disco=$(echo "$linea" | awk '{print $1}')
+    info_disco=$(lsblk -dn -o SIZE "$nombre_disco")
+    elementos_menu+=("$nombre_disco" "$info_disco")
+done
+
+# Usar dialog para mostrar la selección de disco
+exec 3>&1
+disco_seleccionado=$(dialog --clear \
+    --backtitle "Seleccionar Disco" \
+    --title "Discos Disponibles" \
+    --menu "Elige el disco que deseas particionar:" 15 60 6 \
+    "${elementos_menu[@]}" \
+    2>&1 1>&3)
+exit_status=$?
+exec 3>&-
 
 clear
 
-bash 128GPTASCII
-
-# Función para obtener la lista de discos sin particionar
-obtener_discos_libres() {
-    lsblk -dn -o NAME,SIZE,TYPE | awk '$3=="disk" {print "/dev/" $1 " - Tamaño: " $2}'
-}
-
-# Función para verificar si un disco tiene particiones o si están montadas
-verificar_disco() {
-    local disco="$1"
-    # Verifica si el disco tiene particiones
-    if lsblk "$disco" -n -o NAME,TYPE | grep -q "part"; then
-        # Si tiene particiones, verificamos que no estén montadas
-        if mount | grep -q "^$disco"; then
-            return 1  # En uso
-        fi
-    fi
-    return 0  # No está en uso o no tiene particiones
-}
-
-# Listar discos disponibles sin particionar (o sin particiones montadas)
-log_message "Listando discos sin particionar o no en uso."
-available_disks=$(for disk in $(lsblk -dn -o NAME,TYPE | awk '$2=="disk" {print $1}'); do
-    full_disk="/dev/$disk"
-    # Solo mostrar disco si no tiene particiones montadas
-    if verificar_disco "$full_disk"; then
-        size=$(lsblk -dn -o SIZE "$full_disk")
-        echo "$full_disk - Tamaño: $size"
-    fi
-done)
-
-if [ -z "$available_disks" ]; then
-    log_message "No hay ningún disco sin particionar o disponible (sin particiones montadas)."
-    echo "No hay ningún disco sin particionar disponible."
+# Validar selección del disco
+if [ $exit_status -ne 0 ] || [ -z "$disco_seleccionado" ]; then
+    echo "No se seleccionó ningún disco. Saliendo..."
     exit 1
 fi
 
-echo "Discos disponibles sin particionar o sin particiones montadas:"
-echo "$available_disks"
-
-# Seleccionar disco
-read -p "Introduce el disco que quieres particionar (ej. /dev/sdx): " disco_seleccionado
-
-# Validar que el disco seleccionado está en la lista de discos disponibles
-if ! echo "$available_disks" | grep -q "$disco_seleccionado"; then
-    log_message "El disco introducido ($disco_seleccionado) no se encuentra en la lista de discos disponibles."
-    echo "El disco introducido no es válido o no está disponible para particionar."
-    exit 1
-fi
-
-if [ -e "$disco_seleccionado" ]; then
-    log_message "El disco $disco_seleccionado existe."
-    DISK="$disco_seleccionado"
-else
-    log_message "El disco $disco_seleccionado no existe."
+if [ ! -e "$disco_seleccionado" ]; then
     echo "El disco $disco_seleccionado no existe."
     exit 1
 fi
 
-# Advertencia final y confirmación de que se destruirán los datos
-echo "¡ATENCIÓN! Se procederá a crear una tabla de particiones GPT en $DISK, lo que borrará TODOS los datos existentes en ese disco>
-read -p "¿Estás seguro de que deseas continuar? (s/n): " confirmacion
-if [[ ! "$confirmacion" =~ ^[sS]$ ]]; then
-    log_message "El usuario canceló la operación después de la advertencia."
+DISCO="$disco_seleccionado"
+
+# Confirmación final con dialog --yesno
+dialog --title "⚠️ Advertencia" \
+    --yesno "¡ATENCIÓN!\n\nSe procederá a crear una tabla de particiones GPT en:\n\n  $DISCO\n\nEsto BORRARÁ TODOS los datos del disco.\n\n¿Deseas continuar?" 15 60
+
+clear
+
+if [ $? -ne 0 ]; then
+    clear
     echo "Operación cancelada. Cerrando el script."
     exit 1
 fi
 
-log_message "El usuario confirmó la operación en $DISK."
-
 # Crear tabla de particiones GPT
-log_message "Creando tabla de particiones GPT en $DISK."
-parted -s "$DISK" mklabel gpt
+parted -s "$DISCO" mklabel gpt
 if [ $? -ne 0 ]; then
-    log_message "Error al crear la tabla de particiones en $DISK."
     echo "Error al crear la tabla de particiones."
     exit 1
 fi
 
 clear
-
 bash 128GPTASCII
 
-# Menú de opciones para el número de particiones a crear
+# Selección del número de particiones
 echo "Seleccione una opción:"
 echo "1) Crear 128 particiones."
 echo "2) Crear un número personalizado de particiones."
 echo "3) Cancelar y salir."
 read -p "Opción: " opcion
-
 
 case $opcion in
     1)
@@ -202,42 +199,34 @@ case $opcion in
     2)
         read -p "Ingrese el número de particiones a crear: " part
         if ! [[ $part =~ ^[0-9]+$ ]]; then
-            log_message "Número de particiones ingresado no es válido."
             echo "Número inválido."
             exit 1
         fi
         ;;
     3)
-        log_message "El usuario canceló la operación en el menú de particionado."
         echo "Saliendo del script."
         exit 0
         ;;
     *)
-        log_message "Opción inválida en el menú."
         echo "Opción inválida."
         exit 1
         ;;
 esac
 
-# Crear particiones según la opción elegida
-log_message "Creando $part particiones en $DISK."
+# Crear particiones en el disco seleccionado
 for i in $(seq 1 $part); do
     start=$((i * 5))
     end=$((i * 5 + 4))
-    parted -s "$DISK" mkpart primary "${start}MiB" "${end}MiB"
+    parted -s "$DISCO" mkpart primary "${start}MiB" "${end}MiB"
     if [ $? -eq 0 ]; then
-        log_message "Partición $i creada en $DISK: ${start}MiB - ${end}MiB."
-        echo "Partición $i creada en $DISK."
+        echo "Partición $i creada en $DISCO."
     else
-        log_message "Error al crear la partición $i en $DISK."
         echo "Error al crear la partición $i."
         exit 1
     fi
 done
 
-# Mostrar tabla de particiones
-echo "Tabla de particiones de $DISK:"
-parted -s "$DISK" print
-log_message "Operación completada en $DISK."
+echo "Tabla de particiones de $DISCO:"
+parted -s "$DISCO" print
 
 exit 0
