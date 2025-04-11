@@ -1,4 +1,6 @@
 #!/bin/bash
+# Autor: ElLucaMx
+# V-4.1
 
 clear
 bash 128GPTASCII
